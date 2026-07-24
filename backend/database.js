@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { createClient } = require('@supabase/supabase-js');
 const User = require('./models/User');
 const SensorData = require('./models/SensorData');
 const Device = require('./models/Device');
@@ -8,6 +9,15 @@ const Report = require('./models/Report');
 
 // Connection string (can be customized via environment variable)
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/agrishield';
+
+// Supabase Cloud database client
+const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
+
+if (supabase) {
+  console.log('[DATABASE] Supabase Cloud integration enabled for backend telemetry.');
+}
 
 mongoose.set('bufferCommands', false);
 
@@ -21,6 +31,23 @@ mongoose.connect(MONGODB_URI)
 // --- TELEMETRY HELPERS ---
 
 const saveReading = async (reading) => {
+  if (supabase) {
+    try {
+      await supabase.from('sensor_readings').insert({
+        temperature: reading.temperature,
+        humidity: reading.humidity,
+        moisture: reading.moisture,
+        light: reading.light,
+        water_level: reading.waterLevel,
+        health_score: reading.healthScore,
+        pump_status: reading.pumpStatus,
+        fan_status: reading.fanStatus
+      });
+    } catch (sErr) {
+      console.warn('[DATABASE] Supabase telemetry sync error:', sErr.message);
+    }
+  }
+
   const data = new SensorData({
     temperature: reading.temperature,
     humidity: reading.humidity,
@@ -32,7 +59,11 @@ const saveReading = async (reading) => {
     fanStatus: reading.fanStatus
   });
 
-  await data.save();
+  try {
+    await data.save();
+  } catch (err) {
+    console.warn('[DATABASE] MongoDB save skipped:', err.message);
+  }
 
   // Keep Device collection in sync with the latest state, but ONLY in Auto mode
   // so we don't overwrite user's manual commands with lagging telemetry data

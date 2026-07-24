@@ -1,4 +1,5 @@
 import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
+import { supabase, isSupabaseConfigured } from '@/lib/supabase';
 
 // Interfaces matching backend payload models
 export interface SensorReading {
@@ -223,36 +224,123 @@ export function AgrishieldProvider({ children }: { children: ReactNode }) {
 
   // Fetch all initial data states
   const fetchInitialData = async () => {
+    // A. Priority 1: Supabase Cloud Database Integration
+    if (isSupabaseConfigured() && supabase) {
+      try {
+        // 1. Latest Reading
+        const { data: latestData } = await supabase
+          .from('sensor_readings')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (latestData) {
+          setLatestReading({
+            id: latestData.id,
+            temperature: Number(latestData.temperature),
+            humidity: Number(latestData.humidity),
+            moisture: Number(latestData.moisture),
+            light: Number(latestData.light),
+            waterLevel: Number(latestData.water_level),
+            healthScore: Number(latestData.health_score || 100),
+            pumpStatus: latestData.pump_status || 'OFF',
+            fanStatus: latestData.fan_status || 'OFF',
+            timestamp: latestData.created_at
+          });
+        }
+
+        // 2. History logs
+        const { data: historyData } = await supabase
+          .from('sensor_readings')
+          .select('*')
+          .order('created_at', { ascending: false })
+          .limit(24);
+
+        if (historyData && historyData.length > 0) {
+          const mappedHistory: SensorReading[] = historyData.map(item => ({
+            id: item.id,
+            temperature: Number(item.temperature),
+            humidity: Number(item.humidity),
+            moisture: Number(item.moisture),
+            light: Number(item.light),
+            waterLevel: Number(item.water_level),
+            healthScore: Number(item.health_score || 100),
+            pumpStatus: item.pump_status || 'OFF',
+            fanStatus: item.fan_status || 'OFF',
+            timestamp: item.created_at
+          }));
+          setHistory(mappedHistory);
+        }
+
+        // 3. Active Alerts
+        const { data: alertsData } = await supabase
+          .from('alerts')
+          .select('*')
+          .eq('status', 'ACTIVE')
+          .order('created_at', { ascending: false });
+
+        if (alertsData) {
+          const mappedAlerts: SystemAlert[] = alertsData.map(item => ({
+            id: item.id,
+            type: item.type,
+            message: item.message,
+            status: item.status,
+            timestamp: item.created_at
+          }));
+          setActiveAlerts(mappedAlerts);
+        }
+
+        // 4. Device States
+        const { data: deviceData } = await supabase
+          .from('devices')
+          .select('*')
+          .limit(1)
+          .maybeSingle();
+
+        if (deviceData) {
+          setDeviceStates({
+            pump: deviceData.pump || 'OFF',
+            fan: deviceData.fan || 'OFF',
+            light: deviceData.light || 'OFF',
+            mode: deviceData.mode || 'Auto'
+          });
+        }
+
+        setIsConnected(true);
+        return;
+      } catch (err) {
+        console.warn('Supabase fetch failed, trying HTTP backend fallback...', err);
+      }
+    }
+
+    // B. Priority 2: HTTP Backend Fallback (Local Node.js Server)
+    if (!API_URL) return;
     try {
-      // 1. Latest Reading
       const resLatest = await fetch(`${API_URL}/api/sensor/latest`, { headers: getHeaders() });
       if (resLatest.ok) {
         const data = await resLatest.json();
         setLatestReading(data);
       }
 
-      // 2. History logs
       const resHistory = await fetch(`${API_URL}/api/sensor/history?limit=24`, { headers: getHeaders() });
       if (resHistory.ok) {
         const data = await resHistory.json();
         setHistory(data);
       }
 
-      // 3. Active Alerts
       const resAlerts = await fetch(`${API_URL}/api/alerts?status=ACTIVE`, { headers: getHeaders() });
       if (resAlerts.ok) {
         const data = await resAlerts.json();
         setActiveAlerts(data);
       }
 
-      // 4. Device States
       const resDevices = await fetch(`${API_URL}/api/devices`, { headers: getHeaders() });
       if (resDevices.ok) {
         const data = await resDevices.json();
         setDeviceStates(data);
       }
 
-      // 5. Analytics
       await refreshAnalytics();
     } catch (err) {
       console.warn('Backend is unreachable via HTTP. Standing by for connection...', err);
@@ -260,6 +348,7 @@ export function AgrishieldProvider({ children }: { children: ReactNode }) {
   };
 
   const refreshAnalytics = async () => {
+    if (!API_URL) return;
     try {
       const resAnalytics = await fetch(`${API_URL}/api/sensor/analytics`, { headers: getHeaders() });
       if (resAnalytics.ok) {
@@ -272,6 +361,17 @@ export function AgrishieldProvider({ children }: { children: ReactNode }) {
   };
 
   const resolveAlert = async (id: number) => {
+    if (isSupabaseConfigured() && supabase) {
+      try {
+        await supabase.from('alerts').update({ status: 'RESOLVED' }).eq('id', id);
+        setActiveAlerts(prev => prev.filter(alert => alert.id !== id));
+        return;
+      } catch (err) {
+        console.error('Supabase resolve alert failed:', err);
+      }
+    }
+
+    if (!API_URL) return;
     try {
       const res = await fetch(`${API_URL}/api/alerts/${id}`, {
         method: 'PUT',
@@ -287,6 +387,17 @@ export function AgrishieldProvider({ children }: { children: ReactNode }) {
   };
 
   const clearAllAlerts = async () => {
+    if (isSupabaseConfigured() && supabase) {
+      try {
+        await supabase.from('alerts').update({ status: 'RESOLVED' }).eq('status', 'ACTIVE');
+        setActiveAlerts([]);
+        return;
+      } catch (err) {
+        console.error('Supabase clear alerts failed:', err);
+      }
+    }
+
+    if (!API_URL) return;
     try {
       const res = await fetch(`${API_URL}/api/alerts/clear`, { 
         method: 'POST',
@@ -301,6 +412,24 @@ export function AgrishieldProvider({ children }: { children: ReactNode }) {
   };
 
   const updateDevices = async (updates: Partial<DeviceStates>) => {
+    // Update local state immediately for UI responsiveness
+    setDeviceStates(prev => prev ? { ...prev, ...updates } : { pump: 'OFF', fan: 'OFF', light: 'OFF', mode: 'Auto', ...updates });
+
+    if (isSupabaseConfigured() && supabase) {
+      try {
+        const { data: firstDevice } = await supabase.from('devices').select('id').limit(1).maybeSingle();
+        if (firstDevice) {
+          await supabase.from('devices').update({ ...updates, updated_at: new Date().toISOString() }).eq('id', firstDevice.id);
+        } else {
+          await supabase.from('devices').insert({ pump: 'OFF', fan: 'OFF', light: 'OFF', mode: 'Auto', ...updates });
+        }
+        return;
+      } catch (err) {
+        console.error('Supabase device update error:', err);
+      }
+    }
+
+    if (!API_URL) return;
     try {
       const res = await fetch(`${API_URL}/api/devices`, {
         method: 'PUT',
@@ -325,6 +454,67 @@ export function AgrishieldProvider({ children }: { children: ReactNode }) {
     // Fetch initial records on component mount
     fetchInitialData();
 
+    // 1. SUPABASE REALTIME SUBSCRIPTIONS
+    if (isSupabaseConfigured() && supabase) {
+      console.log('[SUPABASE] Initializing Realtime channels...');
+      const channel = supabase.channel('agrishield-db-changes')
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'sensor_readings' }, (payload) => {
+          const raw = payload.new as any;
+          if (raw) {
+            const reading: SensorReading = {
+              id: raw.id,
+              temperature: Number(raw.temperature),
+              humidity: Number(raw.humidity),
+              moisture: Number(raw.moisture),
+              light: Number(raw.light),
+              waterLevel: Number(raw.water_level),
+              healthScore: Number(raw.health_score || 100),
+              pumpStatus: raw.pump_status || 'OFF',
+              fanStatus: raw.fan_status || 'OFF',
+              timestamp: raw.created_at
+            };
+            setLatestReading(reading);
+            setHistory(prev => [reading, ...prev].slice(0, 50));
+          }
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'devices' }, (payload) => {
+          const raw = payload.new as any;
+          if (raw) {
+            setDeviceStates({
+              pump: raw.pump || 'OFF',
+              fan: raw.fan || 'OFF',
+              light: raw.light || 'OFF',
+              mode: raw.mode || 'Auto'
+            });
+          }
+        })
+        .on('postgres_changes', { event: '*', schema: 'public', table: 'alerts' }, () => {
+          supabase.from('alerts').select('*').eq('status', 'ACTIVE').order('created_at', { ascending: false })
+            .then(({ data }) => {
+              if (data) {
+                setActiveAlerts(data.map(item => ({
+                  id: item.id,
+                  type: item.type,
+                  message: item.message,
+                  status: item.status,
+                  timestamp: item.created_at
+                })));
+              }
+            });
+        })
+        .subscribe((status) => {
+          if (status === 'SUBSCRIBED') {
+            console.log('[SUPABASE] Realtime channels active.');
+            setIsConnected(true);
+          }
+        });
+
+      return () => {
+        supabase.removeChannel(channel);
+      };
+    }
+
+    // 2. WEBSOCKET FALLBACK (FOR LOCAL NODE.JS SERVER)
     let ws: WebSocket | null = null;
     let reconnectTimeout: ReturnType<typeof setTimeout>;
 
@@ -337,14 +527,12 @@ export function AgrishieldProvider({ children }: { children: ReactNode }) {
         ws.onopen = () => {
           console.log('[WS] Connected to AgriShield Backend.');
           setIsConnected(true);
-          // Refresh data on re-establishing link
           fetchInitialData();
         };
 
         ws.onmessage = (event) => {
           try {
             const message = JSON.parse(event.data);
-            
             switch (message.type) {
               case 'INIT': {
                 const { latestReading: initLatest, activeAlerts: initAlerts, deviceStates: initDevices } = message.data;
@@ -356,45 +544,12 @@ export function AgrishieldProvider({ children }: { children: ReactNode }) {
               case 'TELEMETRY': {
                 const reading = message.data as SensorReading;
                 setLatestReading(reading);
-                setHistory(prev => {
-                  const updated = [reading, ...prev];
-                  // Cap cache size
-                  if (updated.length > 50) updated.pop();
-                  return updated;
-                });
-                // Keep analytics in sync
+                setHistory(prev => [reading, ...prev].slice(0, 50));
                 refreshAnalytics();
                 break;
               }
-              case 'ALERTS_UPDATE': {
-                const changes = message.data;
-                changes.forEach((change: any) => {
-                  if (change.action === 'RAISED') {
-                    setActiveAlerts(prev => {
-                      // Prevent duplicates
-                      if (prev.some(a => a.id === change.alert.id)) return prev;
-                      return [change.alert, ...prev];
-                    });
-                  } else if (change.action === 'RESOLVED') {
-                    setActiveAlerts(prev => prev.filter(a => a.id !== change.id));
-                  }
-                });
-                break;
-              }
-              case 'ALERTS_CHANGED': {
-                const { id, status } = message.data;
-                if (status === 'RESOLVED' || status === 'ACKNOWLEDGED') {
-                  setActiveAlerts(prev => prev.filter(a => a.id !== id));
-                }
-                break;
-              }
-              case 'ALERTS_CLEARED': {
-                setActiveAlerts([]);
-                break;
-              }
               case 'DEVICE_STATES_UPDATED': {
-                const updatedDevices = message.data as DeviceStates;
-                setDeviceStates(updatedDevices);
+                setDeviceStates(message.data as DeviceStates);
                 break;
               }
               default:
@@ -406,7 +561,6 @@ export function AgrishieldProvider({ children }: { children: ReactNode }) {
         };
 
         ws.onclose = () => {
-          console.log('[WS] Connection closed. Attempting reconnect...');
           setIsConnected(false);
           if (isLocalHost) {
             reconnectTimeout = setTimeout(connectWebSocket, 3000);
