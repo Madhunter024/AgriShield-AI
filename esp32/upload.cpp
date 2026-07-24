@@ -16,7 +16,11 @@ const char* const BACKEND_API_URL = "http://192.168.1.138:5000/api/sensor/live";
 #define DHTPIN 4
 #define SOIL_PIN 34
 #define LDR_PIN 35
-#define WATER_LEVEL_PIN 32
+
+// AJ-SR04M Waterproof Ultrasonic Sensor Pins
+#define ECHO_PIN 32 // Replaced analog WATER_LEVEL_PIN (Input)
+#define TRIG_PIN 13 // Ultrasonic Pulse Trigger Pin (Output)
+
 #define PUMP_RELAY_PIN 26
 #define FAN_RELAY_PIN 27
 
@@ -31,7 +35,7 @@ const int WATER_TANK_EMPTY_LIMIT = 15;  // % Level
 // Telemetry Schedulers
 unsigned long lastLocalUpdate = 0;
 unsigned long lastCloudUpload = 0;
-const unsigned long POLLING_INTERVAL = 2000;    // 2 Seconds for local screen updates
+const unsigned long POLLING_INTERVAL = 2000;    // 2 Seconds for local logs
 const unsigned long TRANSMIT_INTERVAL = 15000;  // 15 Seconds for cloud API push
 
 // Object Instances
@@ -42,8 +46,57 @@ String currentMode = "Auto";
 String manualPumpStatus = "OFF";
 String manualFanStatus = "OFF";
 
+// Non-blocking cached variables
+float cachedTemp = 28.0;
+float cachedHumid = 60.0;
+int currentWaterLevel = 50; 
+
 // ==========================================
-// 2. NETWORK & DRIVER SUBSYSTEMS
+// 2. AJ-SR04M WATER LEVEL ENGINE
+// ==========================================
+int readUltrasonicWaterLevel() {
+    // Tank Distance Calibration in Centimeters (Adjust for your specific tank)
+    const int fullTankCm  = 20;  // Distance when water is FULL (Min 20cm due to blind spot)
+    const int emptyTankCm = 80;  // Distance when tank is completely EMPTY
+
+    const int totalSamples = 5;
+    long validDurationSum = 0;
+    int validReadingsCount = 0;
+
+    // Multi-sample pulse averaging filter for AJ-SR04M
+    for (int i = 0; i < totalSamples; i++) {
+        digitalWrite(TRIG_PIN, LOW);
+        delayMicroseconds(5);
+        digitalWrite(TRIG_PIN, HIGH);
+        delayMicroseconds(20); // 20us pulse required for AJ-SR04M transducer
+        digitalWrite(TRIG_PIN, LOW);
+
+        long duration = pulseIn(ECHO_PIN, HIGH, 35000); // 35ms timeout
+
+        if (duration > 0 && duration < 35000) {
+            validDurationSum += duration;
+            validReadingsCount++;
+        }
+        delay(10); 
+    }
+
+    if (validReadingsCount == 0) {
+        return -1; // Flag failed/missed pulse reading
+    }
+
+    long avgDuration = validDurationSum / validReadingsCount;
+    int distance = avgDuration * 0.0343 / 2;
+
+    // Blind Zone & Out-of-Bounds Mapping
+    if (distance <= fullTankCm && distance > 0) return 100;
+    if (distance >= emptyTankCm) return 0;
+
+    int levelPercent = map(distance, emptyTankCm, fullTankCm, 0, 100);
+    return constrain(levelPercent, 0, 100);
+}
+
+// ==========================================
+// 3. NETWORK & DRIVER SUBSYSTEMS
 // ==========================================
 void connectToWiFi() {
     Serial.printf("\n[NET] Attempting link to Access Point: %s\n", WIFI_SSID);
@@ -122,10 +175,8 @@ int calculateEdgeHealthScore(float t, float h, int s, int w) {
     return constrain(score, 0, 100);
 }
 
-
-
 // ==========================================
-// 3. MAIN APPLICATION SETUP & ENTRY POINT
+// 4. MAIN APPLICATION SETUP & ENTRY POINT
 // ==========================================
 void setup() {
     Serial.begin(115200);
@@ -135,7 +186,11 @@ void setup() {
     dht.begin();
     pinMode(SOIL_PIN, INPUT);
     pinMode(LDR_PIN, INPUT);
-    pinMode(WATER_LEVEL_PIN, INPUT);
+    
+    // AJ-SR04M Ultrasonic Sensor Setup
+    pinMode(TRIG_PIN, OUTPUT);
+    pinMode(ECHO_PIN, INPUT);
+    digitalWrite(TRIG_PIN, LOW);
     
     // Actuator Pins
     pinMode(PUMP_RELAY_PIN, OUTPUT);
@@ -150,15 +205,18 @@ void setup() {
 }
 
 // ==========================================
-// 4. CENTRAL RUNTIME AUTOMATION LOOP
+// 5. CENTRAL RUNTIME AUTOMATION LOOP
 // ==========================================
 void loop() {
     unsigned long currentClock = millis();
 
-    // 4.1 Sensor Evaluation Arrays
-    float currentTemp  = dht.readTemperature();
-    float currentHumid = dht.readHumidity();
+    // 5.1 Non-blocking Sensor Evaluations
+    float rawTemp  = dht.readTemperature();
+    float rawHumid = dht.readHumidity();
     
+    if (!isnan(rawTemp))  cachedTemp = rawTemp;
+    if (!isnan(rawHumid)) cachedHumid = rawHumid;
+
     // Capacitive Moisture Map
     int rawSoil = analogRead(SOIL_PIN);
     int currentSoil = map(rawSoil, 4095, 1200, 0, 100);
@@ -169,19 +227,13 @@ void loop() {
     int currentLight = map(rawLDR, 0, 4095, 0, 100);
     currentLight = constrain(currentLight, 0, 100);
 
-    // Submersible Water Tank Level Map
-    int rawWater = analogRead(WATER_LEVEL_PIN);
-    int currentWater = map(rawWater, 0, 3000, 0, 100);
-    currentWater = constrain(currentWater, 0, 100);
-
-    // Guard Check: Skip current loop cycle if core readings drop out
-    if (isnan(currentTemp) || isnan(currentHumid)) {
-        Serial.println("[ERROR] Check DHT22 physical hardware data connections.");
-        delay(1000);
-        return;
+    // AJ-SR04M Water Level Reading
+    int freshWaterReading = readUltrasonicWaterLevel();
+    if (freshWaterReading != -1) {
+        currentWaterLevel = freshWaterReading; // Hold previous reading if sample is dropped
     }
 
-    // 4.2 Edge Rules Control Matrix
+    // 5.2 Edge Rules Control Matrix
     String statusFan  = "OFF";
     String statusPump = "OFF";
 
@@ -193,9 +245,8 @@ void loop() {
         digitalWrite(PUMP_RELAY_PIN, statusPump == "ON" ? LOW : HIGH);
         digitalWrite(FAN_RELAY_PIN, statusFan == "ON" ? LOW : HIGH);
     } else {
-        // Run edge auto-rule logic
         // Automated Ventilation Control
-        if (currentTemp > TEMP_CRITICAL_HIGH) {
+        if (cachedTemp > TEMP_CRITICAL_HIGH) {
             digitalWrite(FAN_RELAY_PIN, LOW); // Relay Active
             statusFan = "ON";
         } else {
@@ -203,7 +254,7 @@ void loop() {
         }
 
         // Automated Irrigation Control
-        if (currentSoil < SOIL_CRITICAL_DRY && currentWater > WATER_TANK_EMPTY_LIMIT) {
+        if (currentSoil < SOIL_CRITICAL_DRY && currentWaterLevel > WATER_TANK_EMPTY_LIMIT) {
             digitalWrite(PUMP_RELAY_PIN, LOW); // Relay Active
             statusPump = "ON";
         } else {
@@ -211,19 +262,19 @@ void loop() {
         }
     }
 
-    int currentHealthScore = calculateEdgeHealthScore(currentTemp, currentHumid, currentSoil, currentWater);
+    int currentHealthScore = calculateEdgeHealthScore(cachedTemp, cachedHumid, currentSoil, currentWaterLevel);
 
-    // 4.3 Asynchronous Execution Timers
-    // Task 1: Print clean structural terminal logs
+    // 5.3 Asynchronous Execution Timers
+    // Task 1: Terminal logging output
     if (currentClock - lastLocalUpdate >= POLLING_INTERVAL) {
         Serial.printf("[LOG] Mode:%s | T:%.1fC | H:%.1f%% | S:%d%% | L:%d%% | W:%d%% | Score:%d\n", 
-                      currentMode.c_str(), currentTemp, currentHumid, currentSoil, currentLight, currentWater, currentHealthScore);
+                      currentMode.c_str(), cachedTemp, cachedHumid, currentSoil, currentLight, currentWaterLevel, currentHealthScore);
         lastLocalUpdate = currentClock;
     }
 
     // Task 2: Dispatch Data Payload Packets directly to React/Node.js backend API
     if (currentClock - lastCloudUpload >= TRANSMIT_INTERVAL) {
-        streamTelemetryToBackend(currentTemp, currentHumid, currentSoil, currentLight, currentWater, currentHealthScore, statusPump, statusFan);
+        streamTelemetryToBackend(cachedTemp, cachedHumid, currentSoil, currentLight, currentWaterLevel, currentHealthScore, statusPump, statusFan);
         lastCloudUpload = currentClock;
     }
 }
