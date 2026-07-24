@@ -8,9 +8,14 @@
 // 1. SYSTEM CONFIGURATION & PIN INITIALIZATION
 // ==========================================
 // Network Setup
-const char* const WIFI_SSID = "Wifi_SSID";
-const char* const WIFI_PASSWORD = "Wifi_Password";
-const char* const BACKEND_API_URL = "http://192.168.1.138:5000/api/sensor/live";
+const char* const WIFI_SSID = "YOUR_WIFI_SSID";
+const char* const WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+
+// Supabase Cloud Configuration
+const char* const SUPABASE_URL = "https://osatxisktphbdropdshv.supabase.co";
+const char* const SUPABASE_KEY = "sb_publishable_E1sXWWI-6Pm294GziqoLSA_W579eH-z";
+const char* const TELEMETRY_API_URL = "https://osatxisktphbdropdshv.supabase.co/rest/v1/sensor_readings";
+const char* const DEVICES_API_URL = "https://osatxisktphbdropdshv.supabase.co/rest/v1/devices?select=*&limit=1";
 
 // Hardware Pins (Exact Match to Your Layout)
 #define DHTPIN 4
@@ -116,6 +121,31 @@ void connectToWiFi() {
     }
 }
 
+void fetchDeviceControlState() {
+    if (WiFi.status() != WL_CONNECTED) return;
+
+    HTTPClient http;
+    http.begin(DEVICES_API_URL);
+    http.addHeader("apikey", SUPABASE_KEY);
+    http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
+
+    int httpCode = http.GET();
+    if (httpCode == 200) {
+        String response = http.getString();
+        JsonDocument doc;
+        DeserializationError error = deserializeJson(doc, response);
+        if (!error && doc.is<JsonArray>() && doc.size() > 0) {
+            JsonObject controls = doc[0];
+            currentMode = controls["mode"] | "Auto";
+            manualPumpStatus = controls["pump"] | "OFF";
+            manualFanStatus = controls["fan"] | "OFF";
+            Serial.printf("[IOT] Cloud Control Sync -> Mode:%s | Pump:%s | Fan:%s\n", 
+                          currentMode.c_str(), manualPumpStatus.c_str(), manualFanStatus.c_str());
+        }
+    }
+    http.end();
+}
+
 void streamTelemetryToBackend(float t, float h, int s, int l, int w, int score, String pStatus, String fStatus) {
     if (WiFi.status() != WL_CONNECTED) {
         Serial.println("[NET] Upload aborted: Link down. Attempting background reconnect...");
@@ -124,20 +154,26 @@ void streamTelemetryToBackend(float t, float h, int s, int l, int w, int score, 
         return;
     }
 
-    HTTPClient http;
-    http.begin(BACKEND_API_URL);
-    http.addHeader("Content-Type", "application/json");
+    // Fetch latest user control overrides from Supabase
+    fetchDeviceControlState();
 
-    // Dynamic JSON Serialization Document
+    HTTPClient http;
+    http.begin(TELEMETRY_API_URL);
+    http.addHeader("apikey", SUPABASE_KEY);
+    http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
+    http.addHeader("Content-Type", "application/json");
+    http.addHeader("Prefer", "return=minimal");
+
+    // Dynamic JSON Serialization Document (Matching Supabase Postgres schema)
     JsonDocument doc;
     doc["temperature"] = t;
     doc["humidity"] = h;
     doc["moisture"] = s;
     doc["light"] = l;
-    doc["waterLevel"] = w;
-    doc["healthScore"] = score;
-    doc["pumpStatus"] = pStatus;
-    doc["fanStatus"] = fStatus;
+    doc["water_level"] = w;
+    doc["health_score"] = score;
+    doc["pump_status"] = pStatus;
+    doc["fan_status"] = fStatus;
 
     String jsonPayload;
     serializeJson(doc, jsonPayload);
@@ -145,23 +181,9 @@ void streamTelemetryToBackend(float t, float h, int s, int l, int w, int score, 
     int httpResponseCode = http.POST(jsonPayload);
 
     if (httpResponseCode == 201 || httpResponseCode == 200) {
-        String response = http.getString();
-        
-        // Parse incoming controls
-        JsonDocument responseDoc;
-        DeserializationError error = deserializeJson(responseDoc, response);
-        
-        if (!error && responseDoc.containsKey("deviceStates")) {
-            JsonObject controls = responseDoc["deviceStates"];
-            currentMode = controls["mode"] | "Auto";
-            manualPumpStatus = controls["pump"] | "OFF";
-            manualFanStatus = controls["fan"] | "OFF";
-            
-            Serial.printf("[IOT] Linked. Mode:%s | Pump:%s | Fan:%s\n", 
-                          currentMode.c_str(), manualPumpStatus.c_str(), manualFanStatus.c_str());
-        }
+        Serial.printf("[NET] Supabase Cloud Telemetry Upload Success! HTTP Code: %d\n", httpResponseCode);
     } else {
-        Serial.printf("[NET] API Post Failure: %s\n", http.errorToString(httpResponseCode).c_str());
+        Serial.printf("[NET] Supabase Post Failure: HTTP Code %d - %s\n", httpResponseCode, http.errorToString(httpResponseCode).c_str());
     }
     http.end();
 }
