@@ -1,7 +1,16 @@
+require('dotenv').config();
 const http = require('http');
+const { createClient } = require('@supabase/supabase-js');
+
+const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
 
 console.log('=== AgriShield AI ESP32 Telemetry Simulator ===');
-console.log('Sending mock sensor updates to http://localhost:5000/api/sensor/live...\n');
+if (supabase) {
+  console.log(`[SIM ESP32] Direct Supabase Cloud integration active (${supabaseUrl})`);
+}
+console.log('Sending mock sensor updates...\n');
 
 let step = 0;
 
@@ -12,9 +21,32 @@ let baseMoist = 40;  // soil moisture %
 let baseWater = 50;  // water tank %
 let baseLight = 65;
 
-const sendPayload = (payload) => {
+const sendPayload = async (payload) => {
+  // 1. Direct Supabase Cloud Upload
+  if (supabase) {
+    try {
+      const { error } = await supabase.from('sensor_readings').insert({
+        temperature: payload.temperature,
+        humidity: payload.humidity,
+        moisture: payload.moisture,
+        light: payload.light,
+        water_level: payload.waterLevel,
+        health_score: payload.healthScore,
+        pump_status: payload.pumpStatus,
+        fan_status: payload.fanStatus
+      });
+      if (!error) {
+        console.log(`[SIM ESP32 ➔ SUPABASE] Telemetry streamed live to Supabase Cloud!`);
+      } else {
+        console.warn(`[SIM ESP32 ➔ SUPABASE] Sync warning: ${error.message}`);
+      }
+    } catch (sErr) {
+      console.warn(`[SIM ESP32 ➔ SUPABASE] Error: ${sErr.message}`);
+    }
+  }
+
+  // 2. Local Node.js Backend API Upload
   const data = JSON.stringify(payload);
-  
   const options = {
     hostname: 'localhost',
     port: 5000,
@@ -32,18 +64,18 @@ const sendPayload = (payload) => {
     res.on('end', () => {
       try {
         const responseData = JSON.parse(body);
-        console.log(`[SIM ESP32] Sent telemetry - Status Code: ${res.statusCode}`);
+        console.log(`[SIM ESP32 ➔ LOCAL] Sent telemetry - Status Code: ${res.statusCode}`);
         if (responseData.alertsTriggered && responseData.alertsTriggered.length > 0) {
           console.log('  ⚠️ Alerts changed:', JSON.stringify(responseData.alertsTriggered));
         }
       } catch (e) {
-        console.log(`[SIM ESP32] Sent telemetry - Response: ${body}`);
+        // Output logged
       }
     });
   });
 
-  req.on('error', (error) => {
-    console.error(`[SIM ESP32] Transmission Error: ${error.message} (Is backend running?)`);
+  req.on('error', () => {
+    // Silent on local connection when backend isn't running locally
   });
 
   req.write(data);
