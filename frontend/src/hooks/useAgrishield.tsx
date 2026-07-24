@@ -75,12 +75,51 @@ interface AgrishieldContextType {
 
 const AgrishieldContext = createContext<AgrishieldContextType | undefined>(undefined);
 
+const DEFAULT_READING: SensorReading = {
+  id: 1,
+  temperature: 26.5,
+  humidity: 55,
+  moisture: 48,
+  light: 72,
+  waterLevel: 85,
+  healthScore: 92,
+  pumpStatus: 'OFF',
+  fanStatus: 'OFF',
+  timestamp: new Date().toISOString()
+};
+
+const DEFAULT_DEVICES: DeviceStates = {
+  pump: 'OFF',
+  fan: 'OFF',
+  light: 'OFF',
+  mode: 'Auto'
+};
+
+const DEFAULT_ANALYTICS: AnalyticsData = {
+  avgTemp: 24.6,
+  maxTemp: 29.2,
+  minTemp: 20.1,
+  avgHumid: 67,
+  maxHumid: 82,
+  minHumid: 51,
+  avgMoist: 48,
+  maxMoist: 65,
+  minMoist: 32,
+  avgLight: 72,
+  maxLight: 95,
+  minLight: 10,
+  avgWater: 78,
+  maxWater: 98,
+  minWater: 40,
+  avgHealth: 92
+};
+
 export function AgrishieldProvider({ children }: { children: ReactNode }) {
-  const [latestReading, setLatestReading] = useState<SensorReading | null>(null);
+  const [latestReading, setLatestReading] = useState<SensorReading | null>(DEFAULT_READING);
   const [history, setHistory] = useState<SensorReading[]>([]);
   const [activeAlerts, setActiveAlerts] = useState<SystemAlert[]>([]);
-  const [analytics, setAnalytics] = useState<AnalyticsData | null>(null);
-  const [deviceStates, setDeviceStates] = useState<DeviceStates | null>(null);
+  const [analytics, setAnalytics] = useState<AnalyticsData | null>(DEFAULT_ANALYTICS);
+  const [deviceStates, setDeviceStates] = useState<DeviceStates | null>(DEFAULT_DEVICES);
   const [isConnected, setIsConnected] = useState<boolean>(false);
   
   const [user, setUser] = useState<UserProfile | null>(() => {
@@ -98,10 +137,17 @@ export function AgrishieldProvider({ children }: { children: ReactNode }) {
     return null;
   });
 
-  // Dynamic network resolution (local hostname makes it responsive on phones too)
-  const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
-  const API_URL = `http://${host}:5000`;
-  const WS_URL = `ws://${host}:5000`;
+  // Dynamic network resolution
+  const envApiUrl = import.meta.env.VITE_API_URL;
+  const envWsUrl = import.meta.env.VITE_WS_URL;
+
+  const isBrowser = typeof window !== 'undefined';
+  const isHttps = isBrowser && window.location.protocol === 'https:';
+  const host = isBrowser ? window.location.hostname : 'localhost';
+  const isLocalHost = host === 'localhost' || host === '127.0.0.1';
+
+  const API_URL = envApiUrl || (isLocalHost ? `http://${host}:5000` : '');
+  const WS_URL = envWsUrl || (isLocalHost ? `ws://${host}:5000` : '');
 
   const getHeaders = () => {
     const savedToken = token || (typeof window !== 'undefined' ? localStorage.getItem('agrishield_token') : null);
@@ -279,94 +325,101 @@ export function AgrishieldProvider({ children }: { children: ReactNode }) {
     // Fetch initial records on component mount
     fetchInitialData();
 
-    let ws: WebSocket;
+    let ws: WebSocket | null = null;
     let reconnectTimeout: ReturnType<typeof setTimeout>;
 
     const connectWebSocket = () => {
-      console.log(`[WS] Connecting to ${WS_URL}...`);
-      ws = new WebSocket(WS_URL);
+      if (!WS_URL) return;
+      try {
+        console.log(`[WS] Connecting to ${WS_URL}...`);
+        ws = new WebSocket(WS_URL);
 
-      ws.onopen = () => {
-        console.log('[WS] Connected to AgriShield Backend.');
-        setIsConnected(true);
-        // Refresh data on re-establishing link
-        fetchInitialData();
-      };
+        ws.onopen = () => {
+          console.log('[WS] Connected to AgriShield Backend.');
+          setIsConnected(true);
+          // Refresh data on re-establishing link
+          fetchInitialData();
+        };
 
-      ws.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data);
-          
-          switch (message.type) {
-            case 'INIT': {
-              const { latestReading: initLatest, activeAlerts: initAlerts, deviceStates: initDevices } = message.data;
-              if (initLatest) setLatestReading(initLatest);
-              if (initAlerts) setActiveAlerts(initAlerts);
-              if (initDevices) setDeviceStates(initDevices);
-              break;
-            }
-            case 'TELEMETRY': {
-              const reading = message.data as SensorReading;
-              setLatestReading(reading);
-              setHistory(prev => {
-                const updated = [reading, ...prev];
-                // Cap cache size
-                if (updated.length > 50) updated.pop();
-                return updated;
-              });
-              // Keep analytics in sync
-              refreshAnalytics();
-              break;
-            }
-            case 'ALERTS_UPDATE': {
-              const changes = message.data;
-              changes.forEach((change: any) => {
-                if (change.action === 'RAISED') {
-                  setActiveAlerts(prev => {
-                    // Prevent duplicates
-                    if (prev.some(a => a.id === change.alert.id)) return prev;
-                    return [change.alert, ...prev];
-                  });
-                } else if (change.action === 'RESOLVED') {
-                  setActiveAlerts(prev => prev.filter(a => a.id !== change.id));
-                }
-              });
-              break;
-            }
-            case 'ALERTS_CHANGED': {
-              const { id, status } = message.data;
-              if (status === 'RESOLVED' || status === 'ACKNOWLEDGED') {
-                setActiveAlerts(prev => prev.filter(a => a.id !== id));
+        ws.onmessage = (event) => {
+          try {
+            const message = JSON.parse(event.data);
+            
+            switch (message.type) {
+              case 'INIT': {
+                const { latestReading: initLatest, activeAlerts: initAlerts, deviceStates: initDevices } = message.data;
+                if (initLatest) setLatestReading(initLatest);
+                if (initAlerts) setActiveAlerts(initAlerts);
+                if (initDevices) setDeviceStates(initDevices);
+                break;
               }
-              break;
+              case 'TELEMETRY': {
+                const reading = message.data as SensorReading;
+                setLatestReading(reading);
+                setHistory(prev => {
+                  const updated = [reading, ...prev];
+                  // Cap cache size
+                  if (updated.length > 50) updated.pop();
+                  return updated;
+                });
+                // Keep analytics in sync
+                refreshAnalytics();
+                break;
+              }
+              case 'ALERTS_UPDATE': {
+                const changes = message.data;
+                changes.forEach((change: any) => {
+                  if (change.action === 'RAISED') {
+                    setActiveAlerts(prev => {
+                      // Prevent duplicates
+                      if (prev.some(a => a.id === change.alert.id)) return prev;
+                      return [change.alert, ...prev];
+                    });
+                  } else if (change.action === 'RESOLVED') {
+                    setActiveAlerts(prev => prev.filter(a => a.id !== change.id));
+                  }
+                });
+                break;
+              }
+              case 'ALERTS_CHANGED': {
+                const { id, status } = message.data;
+                if (status === 'RESOLVED' || status === 'ACKNOWLEDGED') {
+                  setActiveAlerts(prev => prev.filter(a => a.id !== id));
+                }
+                break;
+              }
+              case 'ALERTS_CLEARED': {
+                setActiveAlerts([]);
+                break;
+              }
+              case 'DEVICE_STATES_UPDATED': {
+                const updatedDevices = message.data as DeviceStates;
+                setDeviceStates(updatedDevices);
+                break;
+              }
+              default:
+                break;
             }
-            case 'ALERTS_CLEARED': {
-              setActiveAlerts([]);
-              break;
-            }
-            case 'DEVICE_STATES_UPDATED': {
-              const updatedDevices = message.data as DeviceStates;
-              setDeviceStates(updatedDevices);
-              break;
-            }
-            default:
-              break;
+          } catch (err) {
+            console.error('[WS] Error processing message:', err);
           }
-        } catch (err) {
-          console.error('[WS] Error processing message:', err);
-        }
-      };
+        };
 
-      ws.onclose = () => {
-        console.log('[WS] Connection closed. Attempting reconnect...');
-        setIsConnected(false);
-        reconnectTimeout = setTimeout(connectWebSocket, 3000);
-      };
+        ws.onclose = () => {
+          console.log('[WS] Connection closed. Attempting reconnect...');
+          setIsConnected(false);
+          if (isLocalHost) {
+            reconnectTimeout = setTimeout(connectWebSocket, 3000);
+          }
+        };
 
-      ws.onerror = (err) => {
-        console.error('[WS] WebSocket error:', err);
-        ws.close();
-      };
+        ws.onerror = (err) => {
+          console.warn('[WS] WebSocket error:', err);
+          if (ws) ws.close();
+        };
+      } catch (err) {
+        console.warn('[WS] WebSocket initialization skipped:', err);
+      }
     };
 
     connectWebSocket();
