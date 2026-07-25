@@ -244,9 +244,9 @@ void loop() {
     int currentSoil = map(rawSoil, 4095, 1200, 0, 100);
     currentSoil = constrain(currentSoil, 0, 100);
 
-    // Light Intensity Map
+    // Light Intensity Map (Reversed: high ADC voltage/raw value = dark, low raw value = bright)
     int rawLDR = analogRead(LDR_PIN);
-    int currentLight = map(rawLDR, 0, 4095, 0, 100);
+    int currentLight = map(rawLDR, 0, 4095, 100, 0);
     currentLight = constrain(currentLight, 0, 100);
 
     // AJ-SR04M Water Level Reading
