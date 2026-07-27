@@ -115,6 +115,38 @@ const DEFAULT_ANALYTICS: AnalyticsData = {
   avgHealth: 92
 };
 
+function computeAnalyticsFromHistory(readings: SensorReading[]): AnalyticsData | null {
+  if (!readings || readings.length === 0) return null;
+  const temps = readings.map(r => r.temperature);
+  const humids = readings.map(r => r.humidity);
+  const moists = readings.map(r => r.moisture);
+  const lights = readings.map(r => r.light);
+  const waters = readings.map(r => r.waterLevel);
+  const healths = readings.map(r => r.healthScore);
+
+  const calc = (arr: number[]) => ({
+    avg: Number((arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(1)),
+    max: Number(Math.max(...arr).toFixed(1)),
+    min: Number(Math.min(...arr).toFixed(1)),
+  });
+
+  const t = calc(temps);
+  const h = calc(humids);
+  const m = calc(moists);
+  const l = calc(lights);
+  const w = calc(waters);
+  const he = calc(healths);
+
+  return {
+    avgTemp: t.avg, maxTemp: t.max, minTemp: t.min,
+    avgHumid: h.avg, maxHumid: h.max, minHumid: h.min,
+    avgMoist: m.avg, maxMoist: m.max, minMoist: m.min,
+    avgLight: l.avg, maxLight: l.max, minLight: l.min,
+    avgWater: w.avg, maxWater: w.max, minWater: w.min,
+    avgHealth: he.avg,
+  };
+}
+
 export function AgrishieldProvider({ children }: { children: ReactNode }) {
   const [latestReading, setLatestReading] = useState<SensorReading | null>(DEFAULT_READING);
   const [history, setHistory] = useState<SensorReading[]>([]);
@@ -271,6 +303,8 @@ export function AgrishieldProvider({ children }: { children: ReactNode }) {
             timestamp: item.created_at
           }));
           setHistory(mappedHistory);
+          const computed = computeAnalyticsFromHistory(mappedHistory);
+          if (computed) setAnalytics(computed);
         }
 
         // 3. Active Alerts
@@ -474,7 +508,12 @@ export function AgrishieldProvider({ children }: { children: ReactNode }) {
               timestamp: raw.created_at
             };
             setLatestReading(reading);
-            setHistory(prev => [reading, ...prev].slice(0, 50));
+            setHistory(prev => {
+              const updated = [reading, ...prev].slice(0, 50);
+              const computed = computeAnalyticsFromHistory(updated);
+              if (computed) setAnalytics(computed);
+              return updated;
+            });
           }
         })
         .on('postgres_changes', { event: '*', schema: 'public', table: 'devices' }, (payload) => {
