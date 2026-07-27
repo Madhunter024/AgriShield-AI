@@ -148,6 +148,6 @@ const simulateLoop = () => {
   sendPayload(payload);
 };
 
-// Start simulation immediately, then repeat every 4 seconds
+// Start simulation immediately, then repeat every 2 seconds
 simulateLoop();
-setInterval(simulateLoop, 4000);
+setInterval(simulateLoop, 2000);

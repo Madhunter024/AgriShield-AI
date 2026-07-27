@@ -41,7 +41,7 @@ const int WATER_TANK_EMPTY_LIMIT = 15;  // % Level
 unsigned long lastLocalUpdate = 0;
 unsigned long lastCloudUpload = 0;
 const unsigned long POLLING_INTERVAL = 2000;    // 2 Seconds for local logs
-const unsigned long TRANSMIT_INTERVAL = 15000;  // 15 Seconds for cloud API push
+const unsigned long TRANSMIT_INTERVAL = 2000;   // 2 Seconds for cloud API push (as requested)
 
 // Object Instances
 DHT dht(DHTPIN, DHTTYPE);
@@ -136,9 +136,15 @@ void fetchDeviceControlState() {
         DeserializationError error = deserializeJson(doc, response);
         if (!error && doc.is<JsonArray>() && doc.size() > 0) {
             JsonObject controls = doc[0];
-            currentMode = controls["mode"] | "Auto";
-            manualPumpStatus = controls["pump"] | "OFF";
-            manualFanStatus = controls["fan"] | "OFF";
+            if (controls.containsKey("mode") && !controls["mode"].isNull()) {
+                currentMode = controls["mode"].as<String>();
+            }
+            if (controls.containsKey("pump") && !controls["pump"].isNull()) {
+                manualPumpStatus = controls["pump"].as<String>();
+            }
+            if (controls.containsKey("fan") && !controls["fan"].isNull()) {
+                manualFanStatus = controls["fan"].as<String>();
+            }
             Serial.printf("[IOT] Cloud Control Sync -> Mode:%s | Pump:%s | Fan:%s\n", 
                           currentMode.c_str(), manualPumpStatus.c_str(), manualFanStatus.c_str());
         }
@@ -223,6 +229,7 @@ void setup() {
     digitalWrite(FAN_RELAY_PIN, HIGH);
 
     connectToWiFi();
+    fetchDeviceControlState();
     Serial.println("[SYSTEM] Startup Sequence Confirmed. Active Execution Initiated.");
 }
 
