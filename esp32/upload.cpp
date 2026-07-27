@@ -232,15 +232,9 @@ void loop() {
     int currentSoil = map(rawSoil, 4095, 1200, 0, 100);
     currentSoil = constrain(currentSoil, 0, 100);
 
-<<<<<<< HEAD
-    // Light Intensity Map (Reversed: high ADC voltage/raw value = dark, low raw value = bright)
-    int rawLDR = analogRead(LDR_PIN);
-    int currentLight = map(rawLDR, 0, 4095, 100, 0);
-=======
     // [INVERTED LDR MAP]: Darkness/No light = 0%, Full Sunlight = 100%
     int rawLDR = analogRead(LDR_PIN);
-    int currentLight = map(rawLDR, 4095, 0, 0, 100); 
->>>>>>> 0beeb10 (Set ESP32 transmit interval to 2s and fix JSON mode extraction from API response)
+    int currentLight = map(rawLDR, 4095, 0, 0, 100);
     currentLight = constrain(currentLight, 0, 100);
 
     // AJ-SR04M Water Level Reading
