@@ -615,9 +615,15 @@ export function AgrishieldProvider({ children }: { children: ReactNode }) {
       }
     };
 
+    // Periodic fallback poller to guarantee 2-second real-time sync across web browsers
+    const livePoller = setInterval(() => {
+      fetchInitialData();
+    }, 2000);
+
     connectWebSocket();
 
     return () => {
+      clearInterval(livePoller);
       if (ws) ws.close();
       clearTimeout(reconnectTimeout);
     };

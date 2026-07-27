@@ -11,8 +11,8 @@ const Report = require('./models/Report');
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/agrishield';
 
 // Supabase Cloud database client
-const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY;
+const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || 'https://osatxisktphbdropdshv.supabase.co';
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.VITE_SUPABASE_ANON_KEY || 'sb_publishable_E1sXWWI-6Pm294GziqoLSA_W579eH-z';
 const supabase = (supabaseUrl && supabaseKey) ? createClient(supabaseUrl, supabaseKey) : null;
 
 if (supabase) {
@@ -333,6 +333,19 @@ const getDeviceStates = async () => {
 };
 
 const updateDeviceStates = async (updates) => {
+  if (supabase) {
+    try {
+      const { data: firstDevice } = await supabase.from('devices').select('id').limit(1).maybeSingle();
+      if (firstDevice) {
+        await supabase.from('devices').update({ ...updates, updated_at: new Date().toISOString() }).eq('id', firstDevice.id);
+      } else {
+        await supabase.from('devices').insert({ pump: 'OFF', fan: 'OFF', light: 'OFF', mode: 'Auto', ...updates });
+      }
+    } catch (sErr) {
+      console.warn('[DATABASE] Supabase device sync error:', sErr.message);
+    }
+  }
+
   let device = await Device.findOne().sort({ _id: 1 }).lean();
   
   let devices;
