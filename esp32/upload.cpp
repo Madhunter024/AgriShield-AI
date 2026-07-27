@@ -219,14 +219,18 @@ void updateLCDDisplay(float temp, float humid, int soil, int light, int water, S
     if (currentClock - lastLcdUpdate < 2500) return; // Refresh LCD every 2.5 seconds
     lastLcdUpdate = currentClock;
 
-    lcd.clear();
+    char line0[17];
+    char line1[17];
+
     if (lcdPageIndex == 0) {
-        // Page 0: Telemetry Sensors (Temp, Humidity, Soil Moisture, Water Level, Light)
-        char line0[17];
-        char line1[17];
-        snprintf(line0, sizeof(line0), "T:%.1fC H:%.0f%%", temp, humid);
-        snprintf(line1, sizeof(line1), "S:%d%% W:%d%% L:%d%%", soil, water, light);
+        // Page 0: Telemetry Sensors (Temp, Humidity, Soil, Water, Light)
+        snprintf(line0, sizeof(line0), "T:%.1fC H:%.0f%%      ", temp, humid);
+        snprintf(line1, sizeof(line1), "S:%d%% W:%d%% L:%d%%    ", soil, water, light);
         
+        // Force exactly 16 character boundaries to prevent trailing ghost artifacts
+        line0[16] = '\0';
+        line1[16] = '\0';
+
         lcd.setCursor(0, 0);
         lcd.print(line0);
         lcd.setCursor(0, 1);
@@ -234,11 +238,12 @@ void updateLCDDisplay(float temp, float humid, int soil, int light, int water, S
         lcdPageIndex = 1;
     } else {
         // Page 1: Actuator Relays & Mode Sync
-        char line0[17];
-        char line1[17];
-        snprintf(line0, sizeof(line0), "Mode: %s", mode.c_str());
-        snprintf(line1, sizeof(line1), "P:%s F:%s L:%s", pump.c_str(), fan.c_str(), lightState.c_str());
+        snprintf(line0, sizeof(line0), "Mode: %-10s", mode.c_str());
+        snprintf(line1, sizeof(line1), "P:%-3s F:%-3s L:%-3s ", pump.c_str(), fan.c_str(), lightState.c_str());
         
+        line0[16] = '\0';
+        line1[16] = '\0';
+
         lcd.setCursor(0, 0);
         lcd.print(line0);
         lcd.setCursor(0, 1);
