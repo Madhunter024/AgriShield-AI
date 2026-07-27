@@ -3,6 +3,7 @@
 #include <ArduinoJson.h>
 #include <Wire.h>
 #include <DHT.h>
+#include <LiquidCrystal_I2C.h>
 
 // ==========================================
 // 1. SYSTEM CONFIGURATION & PIN INITIALIZATION
@@ -34,6 +35,9 @@ const char* const DEVICES_API_URL = "https://osatxisktphbdropdshv.supabase.co/re
 // Hardware Configurations
 #define DHTTYPE DHT22
 
+// 16x2 I2C LCD Display (Default I2C Address 0x27 or 0x3F, SDA=21, SCL=22)
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+
 // Automation Edge Thresholds
 const float TEMP_CRITICAL_HIGH = 35.0; // °C
 const int SOIL_CRITICAL_DRY = 30;       // % Moisture
@@ -43,6 +47,8 @@ const int LIGHT_THRESHOLD_LIMIT = 50;   // % Light threshold for LED
 // Telemetry Schedulers
 unsigned long lastLocalUpdate = 0;
 unsigned long lastCloudUpload = 0;
+unsigned long lastLcdUpdate = 0;
+int lcdPageIndex = 0;
 const unsigned long POLLING_INTERVAL = 2000;    // 2 Seconds for local logs
 const unsigned long TRANSMIT_INTERVAL = 2000;   // 2 Seconds for live telemetry upload
 
@@ -206,11 +212,55 @@ int calculateEdgeHealthScore(float t, float h, int s, int w) {
 }
 
 // ==========================================
-// 4. MAIN APPLICATION SETUP & ENTRY POINT
+// 4. 16x2 I2C LCD DISPLAY SUBSYSTEM
+// ==========================================
+void updateLCDDisplay(float temp, float humid, int soil, int light, int water, String mode, String pump, String fan, String lightState) {
+    unsigned long currentClock = millis();
+    if (currentClock - lastLcdUpdate < 2500) return; // Refresh LCD every 2.5 seconds
+    lastLcdUpdate = currentClock;
+
+    lcd.clear();
+    if (lcdPageIndex == 0) {
+        // Page 0: Telemetry Sensors (Temp, Humidity, Soil Moisture, Water Level, Light)
+        char line0[17];
+        char line1[17];
+        snprintf(line0, sizeof(line0), "T:%.1fC H:%.0f%%", temp, humid);
+        snprintf(line1, sizeof(line1), "S:%d%% W:%d%% L:%d%%", soil, water, light);
+        
+        lcd.setCursor(0, 0);
+        lcd.print(line0);
+        lcd.setCursor(0, 1);
+        lcd.print(line1);
+        lcdPageIndex = 1;
+    } else {
+        // Page 1: Actuator Relays & Mode Sync
+        char line0[17];
+        char line1[17];
+        snprintf(line0, sizeof(line0), "Mode: %s", mode.c_str());
+        snprintf(line1, sizeof(line1), "P:%s F:%s L:%s", pump.c_str(), fan.c_str(), lightState.c_str());
+        
+        lcd.setCursor(0, 0);
+        lcd.print(line0);
+        lcd.setCursor(0, 1);
+        lcd.print(line1);
+        lcdPageIndex = 0;
+    }
+}
+
+// ==========================================
+// 5. MAIN APPLICATION SETUP & ENTRY POINT
 // ==========================================
 void setup() {
     Serial.begin(115200);
     Serial.println("\n====== Booting AgriShield AI Core ======");
+
+    // 16x2 I2C LCD Initialization
+    lcd.init();
+    lcd.backlight();
+    lcd.setCursor(0, 0);
+    lcd.print("AgriShield AI");
+    lcd.setCursor(0, 1);
+    lcd.print("Core Booting...");
 
     // Sensor Drivers
     dht.begin();
@@ -308,6 +358,9 @@ void loop() {
     }
 
     int currentHealthScore = calculateEdgeHealthScore(cachedTemp, cachedHumid, currentSoil, currentWaterLevel);
+
+    // Task 0: Update 16x2 I2C LCD Display Screen
+    updateLCDDisplay(cachedTemp, cachedHumid, currentSoil, currentLight, currentWaterLevel, currentMode, statusPump, statusFan, statusLight);
 
     // 5.3 Asynchronous Execution Timers
     // Task 1: Terminal logging output
