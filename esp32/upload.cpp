@@ -277,10 +277,10 @@ void setup() {
     pinMode(FAN_RELAY_PIN, OUTPUT);
     pinMode(LIGHT_RELAY_PIN, OUTPUT);
 
-    // Initial Safe Defaults
+    // Initial Safe Defaults (Active-Low Relays: HIGH = OFF, LOW = ON)
     digitalWrite(PUMP_RELAY_PIN, HIGH);  // Active-Low OFF
     digitalWrite(FAN_RELAY_PIN, HIGH);   // Active-Low OFF
-    digitalWrite(LIGHT_RELAY_PIN, LOW);  // Active-High OFF (or HIGH if active low)
+    digitalWrite(LIGHT_RELAY_PIN, HIGH); // Active-Low OFF
 
     connectToWiFi();
     fetchDeviceControlState();
@@ -329,31 +329,31 @@ void loop() {
         
         digitalWrite(PUMP_RELAY_PIN, statusPump == "ON" ? LOW : HIGH);
         digitalWrite(FAN_RELAY_PIN, statusFan == "ON" ? LOW : HIGH);
-        digitalWrite(LIGHT_RELAY_PIN, statusLight == "ON" ? HIGH : LOW); // High turns LED ON
+        digitalWrite(LIGHT_RELAY_PIN, statusLight == "ON" ? LOW : HIGH); // Active-Low Relay: LOW = ON, HIGH = OFF
     } else {
         // Automated Ventilation Control
         if (cachedTemp > TEMP_CRITICAL_HIGH) {
-            digitalWrite(FAN_RELAY_PIN, LOW); // Relay Active
+            digitalWrite(FAN_RELAY_PIN, LOW); // Relay Active (ON)
             statusFan = "ON";
         } else {
-            digitalWrite(FAN_RELAY_PIN, HIGH); // Relay Deactivated
+            digitalWrite(FAN_RELAY_PIN, HIGH); // Relay Deactivated (OFF)
         }
 
         // Automated Irrigation Control
         if (currentSoil < SOIL_CRITICAL_DRY && currentWaterLevel > WATER_TANK_EMPTY_LIMIT) {
-            digitalWrite(PUMP_RELAY_PIN, LOW); // Relay Active
+            digitalWrite(PUMP_RELAY_PIN, LOW); // Relay Active (ON)
             statusPump = "ON";
         } else {
-            digitalWrite(PUMP_RELAY_PIN, HIGH); // Relay Deactivated
+            digitalWrite(PUMP_RELAY_PIN, HIGH); // Relay Deactivated (OFF)
         }
 
-        // [AUTOMATED GROW LIGHT CONTROL]: Turns ON if light drops below 50%
-        if (currentLight > LIGHT_THRESHOLD_LIMIT) {
-            digitalWrite(LIGHT_RELAY_PIN, HIGH); // Relay/Pin Active
-            statusLight = "OFF";
-        } else {
-            digitalWrite(LIGHT_RELAY_PIN, LOW);  // Relay/Pin Deactivated
+        // [AUTOMATED GROW LIGHT CONTROL]: Turns ON if natural light drops below threshold (<50%)
+        if (currentLight < LIGHT_THRESHOLD_LIMIT) {
+            digitalWrite(LIGHT_RELAY_PIN, LOW); // Relay Active (ON)
             statusLight = "ON";
+        } else {
+            digitalWrite(LIGHT_RELAY_PIN, HIGH); // Relay Deactivated (OFF)
+            statusLight = "OFF";
         }
     }
 
