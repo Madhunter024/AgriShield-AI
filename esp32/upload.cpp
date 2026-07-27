@@ -8,26 +8,23 @@
 // 1. SYSTEM CONFIGURATION & PIN INITIALIZATION
 // ==========================================
 // Network Setup
-const char* const WIFI_SSID = "YOUR_WIFI_SSID";
-const char* const WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
+const char* const WIFI_SSID = "STPI";
+const char* const WIFI_PASSWORD = "Admin@123";
+const char* const BACKEND_API_URL = "http://192.168.1.138:5000/api/sensor/live";
 
-// Supabase Cloud Configuration
-const char* const SUPABASE_URL = "https://osatxisktphbdropdshv.supabase.co";
-const char* const SUPABASE_KEY = "sb_publishable_E1sXWWI-6Pm294GziqoLSA_W579eH-z";
-const char* const TELEMETRY_API_URL = "https://osatxisktphbdropdshv.supabase.co/rest/v1/sensor_readings";
-const char* const DEVICES_API_URL = "https://osatxisktphbdropdshv.supabase.co/rest/v1/devices?select=*&limit=1";
-
-// Hardware Pins (Exact Match to Your Layout)
+// Hardware Pins Layout
 #define DHTPIN 4
 #define SOIL_PIN 34
 #define LDR_PIN 35
 
 // AJ-SR04M Waterproof Ultrasonic Sensor Pins
-#define ECHO_PIN 32 // Replaced analog WATER_LEVEL_PIN (Input)
-#define TRIG_PIN 13 // Ultrasonic Pulse Trigger Pin (Output)
+#define ECHO_PIN 32 
+#define TRIG_PIN 13 
 
+// Actuators Pins
 #define PUMP_RELAY_PIN 26
 #define FAN_RELAY_PIN 27
+#define LIGHT_RELAY_PIN 14 // Grow Light LED Pin
 
 // Hardware Configurations
 #define DHTTYPE DHT22
@@ -36,12 +33,13 @@ const char* const DEVICES_API_URL = "https://osatxisktphbdropdshv.supabase.co/re
 const float TEMP_CRITICAL_HIGH = 35.0; // °C
 const int SOIL_CRITICAL_DRY = 30;       // % Moisture
 const int WATER_TANK_EMPTY_LIMIT = 15;  // % Level
+const int LIGHT_THRESHOLD_LIMIT = 50;   // % Light threshold for LED
 
 // Telemetry Schedulers
 unsigned long lastLocalUpdate = 0;
 unsigned long lastCloudUpload = 0;
 const unsigned long POLLING_INTERVAL = 2000;    // 2 Seconds for local logs
-const unsigned long TRANSMIT_INTERVAL = 2000;   // 2 Seconds for cloud API push (as requested)
+const unsigned long TRANSMIT_INTERVAL = 2000;   // 2 Seconds for live telemetry upload
 
 // Object Instances
 DHT dht(DHTPIN, DHTTYPE);
@@ -50,6 +48,7 @@ DHT dht(DHTPIN, DHTTYPE);
 String currentMode = "Auto";
 String manualPumpStatus = "OFF";
 String manualFanStatus = "OFF";
+String manualLightStatus = "OFF";
 
 // Non-blocking cached variables
 float cachedTemp = 28.0;
@@ -60,23 +59,21 @@ int currentWaterLevel = 50;
 // 2. AJ-SR04M WATER LEVEL ENGINE
 // ==========================================
 int readUltrasonicWaterLevel() {
-    // Tank Distance Calibration in Centimeters (Adjust for your specific tank)
-    const int fullTankCm  = 20;  // Distance when water is FULL (Min 20cm due to blind spot)
-    const int emptyTankCm = 80;  // Distance when tank is completely EMPTY
+    const int fullTankCm  = 20;  // Min 20cm due to AJ-SR04M blind spot
+    const int emptyTankCm = 80;  // Adjust to your tank depth
 
     const int totalSamples = 5;
     long validDurationSum = 0;
     int validReadingsCount = 0;
 
-    // Multi-sample pulse averaging filter for AJ-SR04M
     for (int i = 0; i < totalSamples; i++) {
         digitalWrite(TRIG_PIN, LOW);
         delayMicroseconds(5);
         digitalWrite(TRIG_PIN, HIGH);
-        delayMicroseconds(20); // 20us pulse required for AJ-SR04M transducer
+        delayMicroseconds(20); 
         digitalWrite(TRIG_PIN, LOW);
 
-        long duration = pulseIn(ECHO_PIN, HIGH, 35000); // 35ms timeout
+        long duration = pulseIn(ECHO_PIN, HIGH, 35000); 
 
         if (duration > 0 && duration < 35000) {
             validDurationSum += duration;
@@ -86,13 +83,12 @@ int readUltrasonicWaterLevel() {
     }
 
     if (validReadingsCount == 0) {
-        return -1; // Flag failed/missed pulse reading
+        return -1; 
     }
 
     long avgDuration = validDurationSum / validReadingsCount;
     int distance = avgDuration * 0.0343 / 2;
 
-    // Blind Zone & Out-of-Bounds Mapping
     if (distance <= fullTankCm && distance > 0) return 100;
     if (distance >= emptyTankCm) return 0;
 
@@ -121,21 +117,41 @@ void connectToWiFi() {
     }
 }
 
-void fetchDeviceControlState() {
-    if (WiFi.status() != WL_CONNECTED) return;
+void streamTelemetryToBackend(float t, float h, int s, int l, int w, int score, String pStatus, String fStatus, String ltStatus) {
+    if (WiFi.status() != WL_CONNECTED) {
+        WiFi.disconnect();
+        WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+        return;
+    }
 
     HTTPClient http;
-    http.begin(DEVICES_API_URL);
-    http.addHeader("apikey", SUPABASE_KEY);
-    http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
+    http.begin(BACKEND_API_URL);
+    http.addHeader("Content-Type", "application/json");
 
-    int httpCode = http.GET();
-    if (httpCode == 200) {
+    JsonDocument doc;
+    doc["temperature"] = t;
+    doc["humidity"] = h;
+    doc["moisture"] = s;
+    doc["light"] = l;
+    doc["waterLevel"] = w;
+    doc["healthScore"] = score;
+    doc["pumpStatus"] = pStatus;
+    doc["fanStatus"] = fStatus;
+    doc["lightStatus"] = ltStatus;
+
+    String jsonPayload;
+    serializeJson(doc, jsonPayload);
+
+    int httpResponseCode = http.POST(jsonPayload);
+
+    if (httpResponseCode == 201 || httpResponseCode == 200) {
         String response = http.getString();
-        JsonDocument doc;
-        DeserializationError error = deserializeJson(doc, response);
-        if (!error && doc.is<JsonArray>() && doc.size() > 0) {
-            JsonObject controls = doc[0];
+        
+        JsonDocument responseDoc;
+        DeserializationError error = deserializeJson(responseDoc, response);
+        
+        if (!error && responseDoc.containsKey("deviceStates")) {
+            JsonObject controls = responseDoc["deviceStates"];
             if (controls.containsKey("mode") && !controls["mode"].isNull()) {
                 currentMode = controls["mode"].as<String>();
             }
@@ -145,51 +161,15 @@ void fetchDeviceControlState() {
             if (controls.containsKey("fan") && !controls["fan"].isNull()) {
                 manualFanStatus = controls["fan"].as<String>();
             }
-            Serial.printf("[IOT] Cloud Control Sync -> Mode:%s | Pump:%s | Fan:%s\n", 
-                          currentMode.c_str(), manualPumpStatus.c_str(), manualFanStatus.c_str());
+            if (controls.containsKey("light") && !controls["light"].isNull()) {
+                manualLightStatus = controls["light"].as<String>();
+            }
+            
+            Serial.printf("[IOT] Linked. Mode:%s | Pump:%s | Fan:%s | Light:%s\n", 
+                          currentMode.c_str(), manualPumpStatus.c_str(), manualFanStatus.c_str(), manualLightStatus.c_str());
         }
-    }
-    http.end();
-}
-
-void streamTelemetryToBackend(float t, float h, int s, int l, int w, int score, String pStatus, String fStatus) {
-    if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("[NET] Upload aborted: Link down. Attempting background reconnect...");
-        WiFi.disconnect();
-        WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-        return;
-    }
-
-    // Fetch latest user control overrides from Supabase
-    fetchDeviceControlState();
-
-    HTTPClient http;
-    http.begin(TELEMETRY_API_URL);
-    http.addHeader("apikey", SUPABASE_KEY);
-    http.addHeader("Authorization", String("Bearer ") + SUPABASE_KEY);
-    http.addHeader("Content-Type", "application/json");
-    http.addHeader("Prefer", "return=minimal");
-
-    // Dynamic JSON Serialization Document (Matching Supabase Postgres schema)
-    JsonDocument doc;
-    doc["temperature"] = t;
-    doc["humidity"] = h;
-    doc["moisture"] = s;
-    doc["light"] = l;
-    doc["water_level"] = w;
-    doc["health_score"] = score;
-    doc["pump_status"] = pStatus;
-    doc["fan_status"] = fStatus;
-
-    String jsonPayload;
-    serializeJson(doc, jsonPayload);
-
-    int httpResponseCode = http.POST(jsonPayload);
-
-    if (httpResponseCode == 201 || httpResponseCode == 200) {
-        Serial.printf("[NET] Supabase Cloud Telemetry Upload Success! HTTP Code: %d\n", httpResponseCode);
     } else {
-        Serial.printf("[NET] Supabase Post Failure: HTTP Code %d - %s\n", httpResponseCode, http.errorToString(httpResponseCode).c_str());
+        Serial.printf("[NET] API Post Failure: %s\n", http.errorToString(httpResponseCode).c_str());
     }
     http.end();
 }
@@ -220,16 +200,17 @@ void setup() {
     pinMode(ECHO_PIN, INPUT);
     digitalWrite(TRIG_PIN, LOW);
     
-    // Actuator Pins
+    // Actuator Pins Setup
     pinMode(PUMP_RELAY_PIN, OUTPUT);
     pinMode(FAN_RELAY_PIN, OUTPUT);
+    pinMode(LIGHT_RELAY_PIN, OUTPUT);
 
-    // High Voltage Safety Power Reset (Active Low Relays)
-    digitalWrite(PUMP_RELAY_PIN, HIGH);
-    digitalWrite(FAN_RELAY_PIN, HIGH);
+    // Initial Safe Defaults
+    digitalWrite(PUMP_RELAY_PIN, HIGH);  // Active-Low OFF
+    digitalWrite(FAN_RELAY_PIN, HIGH);   // Active-Low OFF
+    digitalWrite(LIGHT_RELAY_PIN, LOW);  // Active-High OFF (or HIGH if active low)
 
     connectToWiFi();
-    fetchDeviceControlState();
     Serial.println("[SYSTEM] Startup Sequence Confirmed. Active Execution Initiated.");
 }
 
@@ -251,28 +232,37 @@ void loop() {
     int currentSoil = map(rawSoil, 4095, 1200, 0, 100);
     currentSoil = constrain(currentSoil, 0, 100);
 
+<<<<<<< HEAD
     // Light Intensity Map (Reversed: high ADC voltage/raw value = dark, low raw value = bright)
     int rawLDR = analogRead(LDR_PIN);
     int currentLight = map(rawLDR, 0, 4095, 100, 0);
+=======
+    // [INVERTED LDR MAP]: Darkness/No light = 0%, Full Sunlight = 100%
+    int rawLDR = analogRead(LDR_PIN);
+    int currentLight = map(rawLDR, 4095, 0, 0, 100); 
+>>>>>>> 0beeb10 (Set ESP32 transmit interval to 2s and fix JSON mode extraction from API response)
     currentLight = constrain(currentLight, 0, 100);
 
     // AJ-SR04M Water Level Reading
     int freshWaterReading = readUltrasonicWaterLevel();
     if (freshWaterReading != -1) {
-        currentWaterLevel = freshWaterReading; // Hold previous reading if sample is dropped
+        currentWaterLevel = freshWaterReading; 
     }
 
     // 5.2 Edge Rules Control Matrix
-    String statusFan  = "OFF";
-    String statusPump = "OFF";
+    String statusFan   = "OFF";
+    String statusPump  = "OFF";
+    String statusLight = "OFF";
 
     if (currentMode == "Manual") {
         // Obey user cloud overrides
-        statusPump = manualPumpStatus;
-        statusFan = manualFanStatus;
+        statusPump  = manualPumpStatus;
+        statusFan   = manualFanStatus;
+        statusLight = manualLightStatus;
         
         digitalWrite(PUMP_RELAY_PIN, statusPump == "ON" ? LOW : HIGH);
         digitalWrite(FAN_RELAY_PIN, statusFan == "ON" ? LOW : HIGH);
+        digitalWrite(LIGHT_RELAY_PIN, statusLight == "ON" ? HIGH : LOW); // High turns LED ON
     } else {
         // Automated Ventilation Control
         if (cachedTemp > TEMP_CRITICAL_HIGH) {
@@ -289,6 +279,15 @@ void loop() {
         } else {
             digitalWrite(PUMP_RELAY_PIN, HIGH); // Relay Deactivated
         }
+
+        // [AUTOMATED GROW LIGHT CONTROL]: Turns ON if light drops below 50%
+        if (currentLight > LIGHT_THRESHOLD_LIMIT) {
+            digitalWrite(LIGHT_RELAY_PIN, HIGH); // Relay/Pin Active
+            statusLight = "OFF";
+        } else {
+            digitalWrite(LIGHT_RELAY_PIN, LOW);  // Relay/Pin Deactivated
+            statusLight = "ON";
+        }
     }
 
     int currentHealthScore = calculateEdgeHealthScore(cachedTemp, cachedHumid, currentSoil, currentWaterLevel);
@@ -296,14 +295,14 @@ void loop() {
     // 5.3 Asynchronous Execution Timers
     // Task 1: Terminal logging output
     if (currentClock - lastLocalUpdate >= POLLING_INTERVAL) {
-        Serial.printf("[LOG] Mode:%s | T:%.1fC | H:%.1f%% | S:%d%% | L:%d%% | W:%d%% | Score:%d\n", 
-                      currentMode.c_str(), cachedTemp, cachedHumid, currentSoil, currentLight, currentWaterLevel, currentHealthScore);
+        Serial.printf("[LOG] Mode:%s | T:%.1fC | H:%.1f%% | S:%d%% | L:%d%% | W:%d%% | LightLED:%s | Score:%d\n", 
+                      currentMode.c_str(), cachedTemp, cachedHumid, currentSoil, currentLight, currentWaterLevel, statusLight.c_str(), currentHealthScore);
         lastLocalUpdate = currentClock;
     }
 
     // Task 2: Dispatch Data Payload Packets directly to React/Node.js backend API
     if (currentClock - lastCloudUpload >= TRANSMIT_INTERVAL) {
-        streamTelemetryToBackend(cachedTemp, cachedHumid, currentSoil, currentLight, currentWaterLevel, currentHealthScore, statusPump, statusFan);
+        streamTelemetryToBackend(cachedTemp, cachedHumid, currentSoil, currentLight, currentWaterLevel, currentHealthScore, statusPump, statusFan, statusLight);
         lastCloudUpload = currentClock;
     }
 }
