@@ -1,34 +1,92 @@
 import { motion } from "framer-motion";
-import { Wind, Droplets, Sun, Thermometer, Zap, Power } from "lucide-react";
+import { Wind, Droplets, Sun, Power, Cpu } from "lucide-react";
 import { useAgrishield } from "@/hooks/useAgrishield";
 import { toast } from "sonner";
 
 export function DigitalGreenhouse() {
-  const { latestReading, isConnected } = useAgrishield();
+  const { latestReading, deviceStates, updateDevices, isConnected } = useAgrishield();
 
-  // Read actuator statuses from live telemetry or fallback to defaults
-  const isFanActive = latestReading ? latestReading.fanStatus === 'ON' : true;
-  const isPumpActive = latestReading ? latestReading.pumpStatus === 'ON' : false;
-  // If light sensor reads > 30% intensity, assume grow lights / sun are on
-  const isLightActive = latestReading ? latestReading.light > 30 : true;
+  // Mode state
+  const isAutoMode = deviceStates?.mode !== "Manual";
 
-  const handleActuatorToggle = (device: string) => {
-    toast.info(`${device} is currently managed autonomously by the ESP32 Edge Rules Engine.`, {
-      description: "Autonomous microclimate controls prevent crop damage from manual configuration overrides.",
-      duration: 3500
+  // Compute active actuator status with fallback logic
+  const isFanActive = deviceStates
+    ? deviceStates.fan === "ON"
+    : latestReading
+    ? latestReading.fanStatus === "ON"
+    : false;
+
+  const isPumpActive = deviceStates
+    ? deviceStates.pump === "ON"
+    : latestReading
+    ? latestReading.pumpStatus === "ON"
+    : false;
+
+  const isLightActive = deviceStates
+    ? deviceStates.light === "ON"
+    : latestReading
+    ? latestReading.light > 30
+    : false;
+
+  // Toggle individual actuator device
+  const handleActuatorToggle = (deviceKey: "fan" | "pump" | "light", deviceLabel: string) => {
+    const currentState = deviceKey === "fan" ? isFanActive : deviceKey === "pump" ? isPumpActive : isLightActive;
+    const nextState = currentState ? "OFF" : "ON";
+
+    if (isAutoMode) {
+      updateDevices({ mode: "Manual", [deviceKey]: nextState });
+      toast.success(`Switched to Manual Mode: ${deviceLabel} turned ${nextState}`, {
+        description: "Autonomous edge rules suspended while under manual override control.",
+        duration: 3500,
+      });
+    } else {
+      updateDevices({ [deviceKey]: nextState });
+      toast.success(`${deviceLabel} turned ${nextState}`, {
+        duration: 2500,
+      });
+    }
+  };
+
+  // Toggle overall system control mode
+  const handleModeToggle = () => {
+    const newMode = isAutoMode ? "Manual" : "Auto";
+    updateDevices({ mode: newMode });
+    toast.info(`System mode set to ${newMode}`, {
+      description: newMode === "Auto" 
+        ? "ESP32 autonomous microclimate engine is now controlling actuators." 
+        : "Manual control active. Auto-rules paused.",
+      duration: 3500,
     });
   };
 
   return (
     <div className="glass-card rounded-3xl p-6 relative overflow-hidden">
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex flex-wrap items-center justify-between gap-2 mb-4">
         <div>
           <div className="text-xs uppercase tracking-widest text-muted-foreground">Digital Twin</div>
-          <div className="text-sm font-medium">Live Greenhouse View</div>
+          <div className="text-sm font-medium">Interactive Greenhouse View</div>
         </div>
-        <div className={`flex items-center gap-1.5 text-xs ${isConnected ? "text-emerald" : "text-amber"}`}>
-          <span className={`h-1.5 w-1.5 rounded-full ${isConnected ? "bg-emerald animate-pulse-glow" : "bg-amber"}`}/> 
-          {isConnected ? "Streaming Live" : "Offline"}
+
+        <div className="flex items-center gap-3">
+          {/* Mode Switcher Pill */}
+          <button
+            onClick={handleModeToggle}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-medium border transition-all ${
+              isAutoMode
+                ? "bg-emerald/10 border-emerald/30 text-emerald hover:bg-emerald/20"
+                : "bg-amber/10 border-amber/30 text-amber hover:bg-amber/20"
+            }`}
+            title="Click to toggle between Auto Autopilot and Manual Override mode"
+          >
+            <Cpu className="h-3.5 w-3.5" />
+            {isAutoMode ? "Auto Mode" : "Manual Mode"}
+          </button>
+
+          {/* Connection Indicator */}
+          <div className={`flex items-center gap-1.5 text-xs ${isConnected ? "text-emerald" : "text-amber"}`}>
+            <span className={`h-1.5 w-1.5 rounded-full ${isConnected ? "bg-emerald animate-pulse-glow" : "bg-amber"}`}/> 
+            {isConnected ? "Live" : "Offline"}
+          </div>
         </div>
       </div>
 
@@ -52,21 +110,35 @@ export function DigitalGreenhouse() {
             </linearGradient>
           </defs>
 
-          {/* Sun / light */}
-          {isLightActive && (
-            <>
-              <motion.circle cx="680" cy="80" r="26" fill="oklch(0.85 0.14 75)"
-                animate={{ opacity: [0.8, 1, 0.8] }} transition={{ duration: 3, repeat: Infinity }}/>
-              <motion.circle cx="680" cy="80" r="50" fill="oklch(0.85 0.14 75)" opacity="0.15"
-                animate={{ r: [50, 65, 50] }} transition={{ duration: 3, repeat: Infinity }}/>
-              {/* Light rays down */}
-              {[200, 320, 440, 560].map((x, i) => (
-                <motion.line key={i} x1={x} y1="180" x2={x} y2="380"
-                  stroke="oklch(0.85 0.14 75)" strokeWidth="1" strokeDasharray="4 6"
-                  animate={{ opacity: [0.1, 0.4, 0.1] }} transition={{ duration: 2, delay: i * 0.3, repeat: Infinity }}/>
-              ))}
-            </>
-          )}
+          {/* Interactive Grow Light / Sun */}
+          <g 
+            onClick={() => handleActuatorToggle("light", "Grow Light")} 
+            className="cursor-pointer group"
+          >
+            <motion.circle 
+              cx="680" cy="80" r="26" 
+              fill={isLightActive ? "oklch(0.85 0.14 75)" : "oklch(0.40 0.02 75)"}
+              animate={{ opacity: isLightActive ? [0.8, 1, 0.8] : 0.4 }} 
+              transition={{ duration: 3, repeat: Infinity }}
+            />
+            <motion.circle 
+              cx="680" cy="80" r="50" 
+              fill={isLightActive ? "oklch(0.85 0.14 75)" : "oklch(0.40 0.02 75)"} 
+              opacity={isLightActive ? "0.15" : "0.05"}
+              animate={{ r: isLightActive ? [50, 65, 50] : 50 }} 
+              transition={{ duration: 3, repeat: Infinity }}
+            />
+            {isLightActive && (
+              <>
+                {/* Light rays down */}
+                {[200, 320, 440, 560].map((x, i) => (
+                  <motion.line key={i} x1={x} y1="180" x2={x} y2="380"
+                    stroke="oklch(0.85 0.14 75)" strokeWidth="1.5" strokeDasharray="4 6"
+                    animate={{ opacity: [0.15, 0.5, 0.15] }} transition={{ duration: 2, delay: i * 0.3, repeat: Infinity }}/>
+                ))}
+              </>
+            )}
+          </g>
 
           {/* Roof */}
           <polygon points="120,200 400,80 680,200" fill="url(#ghRoof)"/>
@@ -96,33 +168,43 @@ export function DigitalGreenhouse() {
             </motion.g>
           ))}
 
-          {/* Pump water flow */}
-          {isPumpActive && (
-            <>
-              <rect x="90" y="360" width="24" height="40" rx="4" fill="oklch(0.28 0.02 220)"/>
-              <rect x="94" y="356" width="16" height="6" rx="2" fill="oklch(0.72 0.11 220)"/>
-              {[0, 1, 2, 3, 4].map((i) => (
-                <motion.circle key={i} cx="102" cy="360" r="3" fill="oklch(0.72 0.11 220)"
-                  animate={{ cy: [360, 420], opacity: [0, 1, 0] }}
-                  transition={{ duration: 1.2, delay: i * 0.25, repeat: Infinity }}/>
-              ))}
-              {/* Drip lines */}
-              {[200, 280, 360, 440, 520, 600].map((x, i) => (
-                <motion.circle key={x} cx={x} cy="360" r="2" fill="oklch(0.72 0.11 220)"
-                  animate={{ cy: [360, 380], opacity: [0, 1, 0] }}
-                  transition={{ duration: 1.5, delay: i * 0.2, repeat: Infinity }}/>
-              ))}
-            </>
-          )}
+          {/* Interactive Irrigation Water Pump */}
+          <g 
+            onClick={() => handleActuatorToggle("pump", "Water Pump")} 
+            className="cursor-pointer group"
+          >
+            <rect x="86" y="356" width="32" height="48" rx="6" fill={isPumpActive ? "oklch(0.35 0.12 220)" : "oklch(0.20 0.02 160)"} stroke={isPumpActive ? "oklch(0.72 0.11 220)" : "none"} strokeWidth="1.5"/>
+            <rect x="94" y="352" width="16" height="6" rx="2" fill={isPumpActive ? "oklch(0.72 0.11 220)" : "oklch(0.4 0.02 160)"}/>
+            <text x="102" y="384" textAnchor="middle" fontSize="9" fontWeight="bold" fill="white">PUMP</text>
+            {isPumpActive && (
+              <>
+                {[0, 1, 2, 3, 4].map((i) => (
+                  <motion.circle key={i} cx="102" cy="360" r="3" fill="oklch(0.72 0.11 220)"
+                    animate={{ cy: [360, 420], opacity: [0, 1, 0] }}
+                    transition={{ duration: 1.2, delay: i * 0.25, repeat: Infinity }}/>
+                ))}
+                {/* Drip lines */}
+                {[200, 280, 360, 440, 520, 600].map((x, i) => (
+                  <motion.circle key={x} cx={x} cy="360" r="2" fill="oklch(0.72 0.11 220)"
+                    animate={{ cy: [360, 380], opacity: [0, 1, 0] }}
+                    transition={{ duration: 1.5, delay: i * 0.2, repeat: Infinity }}/>
+                ))}
+              </>
+            )}
+          </g>
 
-          {/* Fan */}
-          <g transform="translate(650, 260)">
-            <circle r="22" fill="oklch(0.20 0.02 160)"/>
+          {/* Interactive Ventilation Fan */}
+          <g 
+            transform="translate(650, 260)" 
+            onClick={() => handleActuatorToggle("fan", "Ventilation Fan")} 
+            className="cursor-pointer group"
+          >
+            <circle r="24" fill={isFanActive ? "oklch(0.30 0.12 160)" : "oklch(0.20 0.02 160)"} stroke={isFanActive ? "oklch(0.62 0.16 155)" : "none"} strokeWidth="1.5"/>
             <motion.g animate={isFanActive ? { rotate: 360 } : { rotate: 0 }} transition={{ duration: 1.2, repeat: isFanActive ? Infinity : 0, ease: "linear" }}>
-              <ellipse rx="16" ry="4" fill="oklch(0.85 0.02 155)"/>
-              <ellipse rx="4" ry="16" fill="oklch(0.85 0.02 155)"/>
+              <ellipse rx="16" ry="4" fill={isFanActive ? "oklch(0.85 0.14 155)" : "oklch(0.50 0.02 155)"}/>
+              <ellipse rx="4" ry="16" fill={isFanActive ? "oklch(0.85 0.14 155)" : "oklch(0.50 0.02 155)"}/>
             </motion.g>
-            <circle r="3" fill="oklch(0.62 0.16 155)"/>
+            <circle r="4" fill="oklch(0.62 0.16 155)"/>
           </g>
 
           {/* Water tank */}
@@ -140,10 +222,10 @@ export function DigitalGreenhouse() {
         </svg>
 
         {/* Device control chips */}
-        <div className="absolute bottom-4 left-4 right-4 flex flex-wrap gap-2">
-          <ControlChip icon={Wind} label="Fan" active={isFanActive} onClick={() => handleActuatorToggle("Ventilation Fan")}/>
-          <ControlChip icon={Droplets} label="Pump" active={isPumpActive} onClick={() => handleActuatorToggle("Water Pump")}/>
-          <ControlChip icon={Sun} label="Grow Light" active={isLightActive} onClick={() => handleActuatorToggle("Grow Light System")}/>
+        <div className="absolute bottom-4 left-4 right-4 flex flex-wrap items-center gap-2">
+          <ControlChip icon={Wind} label="Fan" active={isFanActive} onClick={() => handleActuatorToggle("fan", "Ventilation Fan")}/>
+          <ControlChip icon={Droplets} label="Pump" active={isPumpActive} onClick={() => handleActuatorToggle("pump", "Water Pump")}/>
+          <ControlChip icon={Sun} label="Grow Light" active={isLightActive} onClick={() => handleActuatorToggle("light", "Grow Light")}/>
         </div>
       </div>
     </div>
@@ -171,12 +253,16 @@ function ControlChip({ icon: Icon, label, active, onClick }: { icon: React.Eleme
       className={`flex items-center gap-2 rounded-full px-3 py-2 text-xs font-medium backdrop-blur border transition-all ${
         active
           ? "bg-emerald text-white border-emerald shadow-glow-emerald"
-          : "bg-background/70 border-border text-muted-foreground hover:text-foreground"
+          : "bg-background/80 border-border text-muted-foreground hover:text-foreground hover:bg-background"
       }`}
     >
       <Icon className={`h-3.5 w-3.5 ${active && label === "Fan" ? "animate-spin-slow" : ""}`}/>
       {label}
-      <Power className="h-3 w-3 opacity-70"/>
+      <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-semibold ${active ? "bg-white/20 text-white" : "bg-muted text-muted-foreground"}`}>
+        {active ? "ON" : "OFF"}
+      </span>
+      <Power className="h-3 w-3 opacity-70 ml-0.5"/>
     </motion.button>
   );
 }
+
